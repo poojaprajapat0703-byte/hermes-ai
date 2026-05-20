@@ -1,0 +1,51 @@
+{
+  "type": "record",
+  "name": "Incident",
+  "namespace": "com.hermes.incidents",
+  "doc": "Represents a normalized incident event flowing through Hermes",
+  "fields": [
+    {
+      "name": "incident_id",
+      "type": "string",
+      "doc": "Unique identifier for this incident"
+    },
+    {
+      "name": "title",
+      "type": "string",
+      "doc": "Human readable description of the incident"
+    },
+    {
+      "name": "severity",
+      "type": {
+        "type": "enum",
+        "name": "SeverityLevel",
+        "symbols": ["critical", "high", "medium", "low", "unknown"]
+      },
+      "doc": "Severity level of the incident"
+    },
+    {
+      "name": "source",
+      "type": "string",
+      "doc": "System that generated this alert e.g. datadog, pagerduty"
+    },
+    {
+      "name": "timestamp",
+      "type": "string",
+      "doc": "ISO8601 timestamp when the incident occurred"
+    },
+    {
+      "name": "raw_payload",
+      "type": "string",
+      "doc": "Original raw alert JSON string for audit purposes"
+    },
+    {
+      "name": "metadata",
+      "type": {
+        "type": "map",
+        "values": "string"
+      },
+      "default": {},
+      "doc": "Additional key-value metadata from the source system"
+    }
+  ]
+}
