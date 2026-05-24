@@ -34,7 +34,7 @@ class HermesKafkaProducer:
             value_serializer=lambda v: json.dumps(v).encode("utf-8"),
             key_serializer=lambda k: k.encode("utf-8") if k else None,
             acks="all",
-            retries=3,
+
         )
         await self._producer.start()
         logger.info("Kafka producer started")

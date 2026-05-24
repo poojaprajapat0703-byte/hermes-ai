@@ -1,10 +1,19 @@
 # =============================================================================
 # Hermes — Local Infrastructure
 # =============================================================================
+#
+# CREDENTIAL CONTRACT:
+#   All secrets live in .env (never hardcoded here).
+#   This file reads them via ${VAR} substitution.
+#   Run: docker compose down -v && docker compose up --build -d
+#   The -v flag destroys the postgres volume so it re-reads POSTGRES_PASSWORD.
+# =============================================================================
 
 version: "3.9"
 
 services:
+
+  # ─── Message Queue ──────────────────────────────────────────────────────────
 
   zookeeper:
     image: confluentinc/cp-zookeeper:7.5.0
@@ -30,12 +39,15 @@ services:
       zookeeper:
         condition: service_healthy
     ports:
-      - "29092:29092"
+      - "29092:29092"       # host-facing port (for kafkacat, Kafka UI, etc.)
     environment:
       KAFKA_BROKER_ID: 1
       KAFKA_ZOOKEEPER_CONNECT: "zookeeper:2181"
       KAFKA_ZOOKEEPER_CONNECTION_TIMEOUT_MS: 60000
       KAFKA_ZOOKEEPER_SESSION_TIMEOUT_MS: 60000
+      # Two listeners:
+      #   PLAINTEXT     → used by containers inside the Docker network (kafka:9092)
+      #   PLAINTEXT_HOST → used by tools on your host machine (localhost:29092)
       KAFKA_LISTENERS: "PLAINTEXT://0.0.0.0:9092,PLAINTEXT_HOST://0.0.0.0:29092"
       KAFKA_ADVERTISED_LISTENERS: "PLAINTEXT://kafka:9092,PLAINTEXT_HOST://localhost:29092"
       KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: "PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT"
@@ -87,13 +99,16 @@ services:
       retries: 10
       start_period: 30s
 
+  # ─── Database ───────────────────────────────────────────────────────────────
+
   postgres:
     image: postgres:16-alpine
     container_name: hermes-postgres
+    env_file: .env                              # reads the full .env
     environment:
-      POSTGRES_USER: hermes
-      POSTGRES_PASSWORD: hermes_secret
-      POSTGRES_DB: hermes_db
+      POSTGRES_USER: ${POSTGRES_USER}           # sourced from .env
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}   # sourced from .env
+      POSTGRES_DB: ${POSTGRES_DB}               # sourced from .env
     ports:
       - "5432:5432"
     volumes:
@@ -101,10 +116,13 @@ services:
     networks:
       - hermes-network
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U hermes -d hermes_db"]
+      # Uses ${VAR} here too — stays in sync automatically
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
       interval: 10s
       timeout: 5s
       retries: 5
+
+  # ─── Cache ──────────────────────────────────────────────────────────────────
 
   redis:
     image: redis:7-alpine
@@ -121,6 +139,30 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+
+  # ─── API ────────────────────────────────────────────────────────────────────
+  # Uncomment when services/api/Dockerfile exists (end of D5)
+  #
+  # api:
+  #   build: ./services/api
+  #   container_name: hermes-api
+  #   env_file: .env
+  #   environment:
+  #     DATABASE_URL: ${DATABASE_URL}
+  #     KAFKA_BOOTSTRAP_SERVERS: ${KAFKA_BOOTSTRAP_SERVERS}
+  #     REDIS_URL: ${REDIS_URL}
+  #     LOG_LEVEL: ${LOG_LEVEL}
+  #   ports:
+  #     - "8000:8000"
+  #   depends_on:
+  #     postgres:
+  #       condition: service_healthy   # waits for pg_isready
+  #     kafka:
+  #       condition: service_healthy
+  #     redis:
+  #       condition: service_healthy
+  #   networks:
+  #     - hermes-network
 
 volumes:
   postgres_data:
