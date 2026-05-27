@@ -7,11 +7,10 @@ Key principle: these are the API contract, not the DB model.
 They can evolve independently of the Postgres schema.
 """
 
-from datetime import datetime
+from datetime import UTC, datetime
 from uuid import UUID
 
 from pydantic import BaseModel, Field
-
 
 # ─────────────────────────────────────────────
 # REQUEST SCHEMAS
@@ -23,7 +22,7 @@ class IncidentCreate(BaseModel):
     Body for POST /incidents.
 
     Field names match the DB schema exactly:
-      - source   → the affected service/system (maps to incidents.source)
+      - source   → incidents.source (affected service/system)
       - severity → one of: critical, high, medium, low, unknown
     """
 
@@ -65,9 +64,8 @@ class IncidentCreateResponse(BaseModel):
     """
     Minimal response from POST /incidents.
 
-    We intentionally return only the ID. The client
-    can fetch the full resource via GET /incidents/{id}.
-    This follows the "thin POST" pattern used by Stripe, GitHub etc.
+    Returns only the ID — client fetches full resource via GET.
+    This is the "thin POST" pattern used by Stripe, GitHub etc.
     """
 
     incident_id: UUID
@@ -77,7 +75,7 @@ class IncidentCreateResponse(BaseModel):
 class RCASummary(BaseModel):
     """
     Embedded RCA snapshot inside an incident response.
-    Only included when an RCA has been completed.
+    Only present when an RCA has been completed for this incident.
     """
 
     rca_id: UUID
@@ -103,7 +101,7 @@ class IncidentResponse(BaseModel):
     created_at: datetime
     updated_at: datetime
     occurred_at: datetime
-    rca: RCASummary | None = None  # None until D6 AI analysis runs
+    rca: RCASummary | None = None
 
     model_config = {"from_attributes": True}
 
@@ -144,13 +142,11 @@ class WebSocketEvent(BaseModel):
 
     event_type acts as a discriminator so clients can
     branch on it without parsing the full payload first.
-
-    Examples:
-      {"event_type": "rca.completed", "incident_id": "...", "payload": {...}}
-      {"event_type": "incident.updated", "incident_id": "...", "payload": {...}}
     """
 
     event_type: str
     incident_id: UUID
     payload: dict
-    timestamp: datetime = Field(default_factory=datetime.utcnow)
+    # FIX: datetime.utcnow() is deprecated since Python 3.12.
+    # Use datetime.now(UTC) which returns a timezone-aware datetime.
+    timestamp: datetime = Field(default_factory=lambda: datetime.now(UTC))

@@ -14,8 +14,8 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from fastapi.testclient import TestClient
 
-from ..main import create_app
 from ..dependencies import get_db_pool, get_ws_manager
+from ..main import create_app
 from ..websockets.manager import ConnectionManager
 
 

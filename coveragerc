@@ -1,0 +1,10 @@
+[run]
+omit =
+    services/ingestion/*
+    services/orchestrator/*
+
+[report]
+fail_under = 70
+omit =
+    services/ingestion/*
+    services/orchestrator/*

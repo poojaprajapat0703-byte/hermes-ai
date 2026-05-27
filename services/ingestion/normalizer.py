@@ -14,7 +14,6 @@ from datetime import UTC, datetime
 
 from pydantic import BaseModel, Field, field_validator
 
-
 # ---------------------------------------------------------------------------
 # Severity mapping — different sources use different words
 # We normalize everything to OUR standard severity levels
@@ -142,9 +141,10 @@ class Normalizer:
             if value := payload.get(field):
                 return str(value)
         raise MissingFieldError(
-            f"No title field found in payload. Tried: title, name, message, description, alert_name. "
-            f"Got keys: {list(payload.keys())}"
-        )
+    f"No title field found in payload. "
+    f"Tried: title, name, message, description, alert_name. "
+    f"Got keys: {list(payload.keys())}"
+)
 
     def _extract_severity(self, payload: dict) -> str:
         """Extract severity and map it to our standard levels."""

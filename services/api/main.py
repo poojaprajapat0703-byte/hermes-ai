@@ -45,7 +45,7 @@ Key parameters:
   min_size=5   → Keep 5 connections open always (warm pool)
   max_size=20  → Never open more than 20 (backpressure)
   command_timeout=30 → Queries taking >30s are cancelled automatically
-  
+
 Without a pool, each request would:
   1. TCP handshake with Postgres (1-3ms)
   2. TLS negotiation (5-10ms)
@@ -67,7 +67,7 @@ Startup sequence:
   5. KafkaConsumerService is constructed with service + ws_manager
   6. consumer.start() schedules the consume loop as asyncio.Task
   7. yield — app begins serving requests
-  
+
 Request (POST /incidents):
   - get_db_pool() reads app.state.db_pool
   - get_incident_service() wraps pool in IncidentService
@@ -148,7 +148,7 @@ DB_POOL_MAX_SIZE: int = int(os.getenv("DB_POOL_MAX_SIZE", "20"))
 async def lifespan(app: FastAPI):
     """
     FastAPI lifespan: startup (before yield) → serve → shutdown (after yield).
-    
+
     Everything before yield runs once at startup.
     Everything after yield runs once at shutdown.
     Resources created here are available for the entire life of the app.
@@ -228,7 +228,7 @@ def create_app() -> FastAPI:
         title="Hermes — AI-Native Incident Intelligence",
         description="""
         Real-time incident management API with AI-powered RCA.
-        
+
         ## Features
         - Incident CRUD with full lifecycle tracking
         - Real-time event streaming via WebSocket
@@ -278,7 +278,7 @@ def create_app() -> FastAPI:
         """
         Kubernetes/Docker health probe endpoint.
         Returns 200 when the service is ready to receive traffic.
-        
+
         In production, extend this to check:
           - DB pool: try a SELECT 1
           - Kafka: check consumer lag

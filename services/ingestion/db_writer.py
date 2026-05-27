@@ -3,13 +3,13 @@ services/ingestion/db_writer.py
 ────────────────────────────────
 Consumes from normalized.incidents and writes to Postgres.
 
-This is the bridge between the Kafka pipeline and the database.
-It runs as a background service alongside the ingestion consumer.
+Bridge between the Kafka pipeline and the database.
+Runs as a background service alongside the ingestion consumer.
 
-Why a separate service instead of writing from the normalizer directly?
+Why separate from the normalizer?
   - Single responsibility: normalizer transforms, db_writer persists
-  - If the DB is down, messages stay in Kafka and are retried
-  - You can replay messages from Kafka without re-ingesting from source
+  - If the DB is down, messages stay in Kafka and are retried on recovery
+  - You can replay messages without re-ingesting from source
 
 Run with:
     python -m services.ingestion.db_writer
@@ -19,13 +19,14 @@ import asyncio
 import json
 import logging
 import os
+from datetime import UTC, datetime
 from pathlib import Path
 
 import asyncpg
 from aiokafka import AIOKafkaConsumer
 from dotenv import load_dotenv
 
-# Load .env from project root
+# Load .env from project root — must happen before os.getenv()
 load_dotenv(Path(__file__).resolve().parents[2] / ".env")
 
 logging.basicConfig(
@@ -40,7 +41,6 @@ TOPIC_NORMALIZED = "normalized.incidents"
 CONSUMER_GROUP = "hermes-db-writer-group"
 DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://hermes:hermes_secret@localhost:5432/hermes_db")
 
-# SQL to insert a normalized incident into Postgres
 INSERT_SQL = """
     INSERT INTO incidents (
         title, description, severity, status,
@@ -56,31 +56,36 @@ async def write_incident(conn: asyncpg.Connection, event: dict) -> None:
     """
     Insert one normalized incident into Postgres.
 
-    ON CONFLICT DO NOTHING prevents duplicate inserts if the consumer
-    replays messages (e.g. after a crash before offset commit).
+    ON CONFLICT DO NOTHING handles replays safely — if the consumer
+    crashes before committing the offset, the same message is redelivered
+    but the duplicate insert is silently ignored.
     """
-    import json as json_mod
-    from datetime import UTC, datetime
-
-    # Parse occurred_at — use NOW() if missing or unparseable
+    # Parse occurred_at — fall back to NOW() if missing or unparseable
     try:
         occurred_at = datetime.fromisoformat(event.get("timestamp", ""))
     except (ValueError, TypeError):
         occurred_at = datetime.now(UTC)
 
+    # raw_payload is stored as a JSON string in NormalizedIncident
+    raw_payload_str = event.get("raw_payload", "{}")
+    try:
+        raw_payload = json.dumps(json.loads(raw_payload_str))
+    except (json.JSONDecodeError, TypeError):
+        raw_payload = "{}"
+
     row = await conn.fetchrow(
         INSERT_SQL,
         event.get("title", "Untitled incident"),
-        None,  # description — not in normalized format yet
+        None,  # description — enriched by AI analysis in D8
         event.get("severity", "unknown"),
         event.get("source", "unknown"),
-        json_mod.dumps(json_mod.loads(event.get("raw_payload", "{}"))),
+        raw_payload,
         occurred_at,
     )
 
     if row:
         logger.info(
-            "Incident written to DB | id=%s source=%s severity=%s",
+            "Incident written | id=%s source=%s severity=%s",
             row["id"],
             event.get("source"),
             event.get("severity"),
@@ -92,7 +97,6 @@ async def write_incident(conn: asyncpg.Connection, event: dict) -> None:
 async def run() -> None:
     """Main loop: consume normalized.incidents → write to Postgres."""
 
-    # Connect to Postgres
     pool = await asyncpg.create_pool(
         dsn=DATABASE_URL,
         min_size=2,
@@ -101,7 +105,6 @@ async def run() -> None:
     )
     logger.info("Postgres pool ready")
 
-    # Connect to Kafka
     consumer = AIOKafkaConsumer(
         TOPIC_NORMALIZED,
         bootstrap_servers=KAFKA_BOOTSTRAP,
@@ -120,10 +123,9 @@ async def run() -> None:
             try:
                 async with pool.acquire() as conn:
                     await write_incident(conn, msg.value)
-            except Exception as e:
+            except Exception as exc:
                 # Log and continue — never crash the consumer over one bad message
-                logger.error("Failed to write incident: %s | payload=%s", e, msg.value)
-
+                logger.error("Failed to write incident: %s | payload=%s", exc, msg.value)
     finally:
         await consumer.stop()
         await pool.close()
