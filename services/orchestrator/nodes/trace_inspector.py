@@ -82,6 +82,17 @@ def trace_inspector_node(state: AgentState) -> dict:
         raw = response.choices[0].message.content.strip()
         logger.debug("trace_inspector raw LLM response: %s", raw)
 
+        # Strip markdown fences if LLM wraps in ```json
+        if "```" in raw:
+            raw = raw.split("```")[1]
+            if raw.startswith("json"):
+                raw = raw[4:]
+        raw = raw.strip()
+
+        # Auto-close if LLM truncated the JSON (missing closing brace)
+        if not raw.endswith("}"):
+            raw += "}"
+
         # Step 3: Parse JSON
         parsed = json.loads(raw)
         result = AnalysisResult(

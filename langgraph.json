@@ -1,0 +1,6 @@
+{
+  "dependencies": ["."],
+  "graphs": {
+    "hermes": "./services/orchestrator/graph.py:graph"
+  }
+}
