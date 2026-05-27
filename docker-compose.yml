@@ -140,6 +140,24 @@ services:
       timeout: 5s
       retries: 5
 
+  # ─── Vector Store (RAG) ─────────────────────────────────────────────────────
+
+  qdrant:
+    image: qdrant/qdrant
+    container_name: hermes-qdrant
+    ports:
+      - "6333:6333"     # REST API + Web UI
+      - "6334:6334"     # gRPC
+    volumes:
+      - qdrant_data:/qdrant/storage
+    networks:
+      - hermes-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:6333/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
   # ─── API ────────────────────────────────────────────────────────────────────
   # Uncomment when services/api/Dockerfile exists (end of D5)
   #
@@ -167,6 +185,7 @@ services:
 volumes:
   postgres_data:
   redis_data:
+  qdrant_data:          # ← NEW: persists vectors across restarts
 
 networks:
   hermes-network:
