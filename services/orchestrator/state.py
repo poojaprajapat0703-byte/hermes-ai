@@ -31,9 +31,17 @@ Data flow through state:
   classifier node writes state["classification"] = {"severity": "high", ...}
     ↓  state = {"incident": "...", "classification": {"severity": "high"}, ...}
   END
+
+Why Annotated[list, operator.add] for analyses?
+  When two nodes run IN PARALLEL (log_analyst + trace_inspector),
+  both write to "analyses" at the same time.
+  Without Annotated: LangGraph panics — "who wins?!"
+  With Annotated[list, operator.add]: LangGraph concatenates both lists.
+  operator.add on lists = [a] + [b] = [a, b]  ✅
 """
 
-from typing import TypedDict
+import operator
+from typing import Annotated, TypedDict
 
 
 class AgentState(TypedDict):
@@ -47,11 +55,11 @@ class AgentState(TypedDict):
     Fields:
       incident       (str)  - Raw incident/alert text from monitoring system
       classification (dict) - AI output: {"severity": "high", "domain": "backend"}
-      analyses       (list) - List of analysis results from analysis nodes
+      analyses       (list) - List of AnalysisResult objects from parallel agents
       rca_report     (dict) - Final structured RCA report
     """
 
-    incident: str        # Input: the alert text we want to classify
-    classification: dict # Output of classifier node
-    analyses: list       # Output of analysis nodes (D9+)
-    rca_report: dict     # Output of RCA node (D9+)
+    incident: str                            # Input: the alert text we want to classify
+    classification: dict                     # Output of classifier node
+    analyses: Annotated[list, operator.add]  # Parallel agents append — LangGraph merges
+    rca_report: dict                         # Output of RCA node (D9+)

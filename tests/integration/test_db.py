@@ -1,18 +1,25 @@
-import uuid
-import asyncpg
-import pytest
 import asyncio
 import os
-from datetime import datetime, timezone
+import uuid
+from datetime import UTC, datetime
 
-from shared.db.connection import init_db_pool, close_db_pool
+import asyncpg
+import pytest
+
+from shared.db.connection import close_db_pool, init_db_pool
 from shared.db.incidents_repo import (
-    IncidentCreate, insert_incident, get_incident,
-    list_incidents, update_incident_status, count_incidents,
+    IncidentCreate,
+    count_incidents,
+    get_incident,
+    insert_incident,
+    list_incidents,
+    update_incident_status,
 )
 from shared.db.rca_repo import (
-    RCAReportCreate, insert_rca_report,
-    get_rca_by_incident, mark_rca_human_reviewed,
+    RCAReportCreate,
+    get_rca_by_incident,
+    insert_rca_report,
+    mark_rca_human_reviewed,
 )
 
 DATABASE_URL = "postgresql://hermes:hermes_secret@127.0.0.1:5432/hermes_db"
@@ -48,7 +55,7 @@ def make_incident(**kwargs):
         severity="high",
         description="CPU exceeded 90%",
         status="open",
-        occurred_at=datetime.now(timezone.utc),
+        occurred_at=datetime.now(UTC),
         raw_payload={"alert_id": "dd-123"},
     )
     defaults.update(kwargs)

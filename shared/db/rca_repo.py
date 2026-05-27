@@ -5,12 +5,12 @@ shared/db/rca_repo.py
 PURPOSE:
     Repository for RCA (Root Cause Analysis) reports.
     Handles all database reads and writes for the rca_reports table.
-    
+
     This is intentionally separate from incidents_repo.py because:
     1. RCAs have different business logic than incidents
     2. Smaller, focused files are easier to read and test
     3. When the RCA system grows complex, all that complexity stays HERE
-    
+
 RELATIONSHIP TO INCIDENTS:
     An RCA report BELONGS TO an incident (via incident_id foreign key).
     You cannot have an RCA report without a valid incident existing first.
@@ -18,11 +18,10 @@ RELATIONSHIP TO INCIDENTS:
 """
 
 import json
-import uuid
 import logging
-from datetime import datetime
-from typing import Optional
+import uuid
 from dataclasses import dataclass, field
+from datetime import datetime
 
 from shared.db.connection import get_connection, get_transaction
 
@@ -53,8 +52,8 @@ class RCAReport:
     contributing_factors: list
     recommendations: list
     human_reviewed: bool
-    reviewed_by: Optional[str]
-    reviewed_at: Optional[datetime]
+    reviewed_by: str | None
+    reviewed_at: datetime | None
     created_at: datetime
     updated_at: datetime
 
@@ -66,22 +65,22 @@ class RCAReport:
 async def insert_rca_report(report: RCAReportCreate) -> uuid.UUID:
     """
     Create a new RCA report linked to an incident.
-    
+
     FOREIGN KEY ENFORCEMENT:
         If you pass an incident_id that doesn't exist in the incidents table,
         Postgres will raise asyncpg.ForeignKeyViolationError.
         This is a FEATURE — the database protects data integrity so you don't have to.
-    
+
     JSONB FIELDS:
         contributing_factors and recommendations are Python lists.
         We json.dumps() them before passing to asyncpg so they're stored as JSONB.
-        
+
     Args:
         report: RCAReportCreate with the report data
-        
+
     Returns:
         UUID of the newly created RCA report
-        
+
     Raises:
         asyncpg.ForeignKeyViolationError: if incident_id doesn't exist
     """
@@ -103,24 +102,24 @@ async def insert_rca_report(report: RCAReportCreate) -> uuid.UUID:
             json.dumps(report.contributing_factors),         # $4 — list → JSON string
             json.dumps(report.recommendations),              # $5
         )
-    
+
     logger.info(f"Inserted RCA report id={report_id} for incident_id={report.incident_id}")
     return report_id
 
 
-async def get_rca_by_incident(incident_id: uuid.UUID) -> Optional[RCAReport]:
+async def get_rca_by_incident(incident_id: uuid.UUID) -> RCAReport | None:
     """
     Fetch the RCA report for a specific incident.
     Returns None if no RCA has been generated yet for this incident.
-    
+
     WHY ONE RCA PER INCIDENT?
         Incidents have exactly one canonical post-mortem. If you regenerate,
         you UPDATE the existing one rather than creating a new row.
         (For history of versions, you'd add a separate rca_versions table.)
-    
+
     Args:
         incident_id: The UUID of the incident to look up
-        
+
     Returns:
         RCAReport dataclass if found, None if no RCA exists for this incident
     """
@@ -144,14 +143,14 @@ async def get_rca_by_incident(incident_id: uuid.UUID) -> Optional[RCAReport]:
             """,
             incident_id
         )
-    
+
     if row is None:
         return None
-    
+
     return _row_to_rca_report(row)
 
 
-async def get_rca_report(report_id: uuid.UUID) -> Optional[RCAReport]:
+async def get_rca_report(report_id: uuid.UUID) -> RCAReport | None:
     """
     Fetch an RCA report by its own ID (not the incident_id).
     Useful when you have the RCA id directly (e.g., from a webhook or URL param).
@@ -169,7 +168,7 @@ async def get_rca_report(report_id: uuid.UUID) -> Optional[RCAReport]:
             """,
             report_id
         )
-    
+
     return _row_to_rca_report(row) if row else None
 
 
@@ -179,19 +178,19 @@ async def mark_rca_human_reviewed(
 ) -> bool:
     """
     Mark an RCA report as reviewed by a human engineer.
-    
+
     This is a critical workflow step — an unreviewed AI report is a DRAFT.
     A reviewed report is authoritative and can be published.
-    
+
     Uses get_transaction() because we want to ensure:
         1. The report exists (SELECT with lock)
         2. The UPDATE actually runs
         3. If anything fails, nothing changes
-    
+
     Args:
         report_id:   UUID of the RCA report to mark as reviewed
         reviewed_by: Engineer's identifier (email, username, etc.)
-        
+
     Returns:
         True if found and updated, False if report doesn't exist
     """
@@ -208,13 +207,13 @@ async def mark_rca_human_reviewed(
             reviewed_by,
             report_id,
         )
-    
+
     rows_affected = int(result.split()[-1])
-    
+
     if rows_affected == 0:
         logger.warning(f"mark_rca_human_reviewed: RCA report not found id={report_id}")
         return False
-    
+
     logger.info(f"RCA report id={report_id} marked as reviewed by {reviewed_by}")
     return True
 
@@ -222,14 +221,14 @@ async def mark_rca_human_reviewed(
 async def list_unreviewed_rcas(limit: int = 20) -> list[RCAReport]:
     """
     Return a list of AI-generated RCA reports not yet reviewed by a human.
-    
+
     REAL-WORLD USE:
         This powers the "Review Queue" in an ops dashboard —
         a list of AI post-mortems waiting for engineer approval.
         Exactly how GitHub Copilot's suggestion queue works.
     """
     limit = min(limit, 100)  # Safety cap
-    
+
     async with get_connection() as conn:
         rows = await conn.fetch(
             """
@@ -245,7 +244,7 @@ async def list_unreviewed_rcas(limit: int = 20) -> list[RCAReport]:
             """,
             limit
         )
-    
+
     return [_row_to_rca_report(row) for row in rows]
 
 
@@ -255,27 +254,27 @@ async def insert_incident_and_rca(
 ) -> tuple[uuid.UUID, uuid.UUID]:
     """
     Insert an incident AND its RCA report atomically in a single transaction.
-    
+
     WHY THIS FUNCTION EXISTS:
         Sometimes the AI pipeline produces both simultaneously.
         We want both to land in the DB or neither — no partial state.
         This is the canonical use of a transaction across TWO tables.
-    
+
     PATTERN:
         async with get_transaction() as conn:
             # Both inserts use the SAME connection (important!)
             incident_id = await conn.fetchval("INSERT INTO incidents ...")
             report_id = await conn.fetchval("INSERT INTO rca_reports ...")
         # If either raised an error, BOTH are rolled back.
-    
+
     Args:
         incident_data: IncidentCreate (from incidents_repo)
         rca_data:      RCAReportCreate (NOTE: incident_id will be set inside)
-        
+
     Returns:
         Tuple of (incident_id, rca_report_id)
     """
-    
+
     async with get_transaction() as conn:
         # Step 1: Insert the incident
         incident_id = await conn.fetchval(
@@ -292,7 +291,7 @@ async def insert_incident_and_rca(
             json.dumps(incident_data.raw_payload) if incident_data.raw_payload else None,
             incident_data.occurred_at,
         )
-        
+
         # Step 2: Insert the RCA, linking to the incident we just created.
         # This only works because we're in the same transaction — the incident
         # row technically doesn't "exist" until we COMMIT, but within the same
@@ -309,7 +308,7 @@ async def insert_incident_and_rca(
             json.dumps(rca_data.contributing_factors),
             json.dumps(rca_data.recommendations),
         )
-    
+
     # If we reach here, the transaction committed successfully.
     logger.info(f"Atomically inserted incident id={incident_id} with RCA id={report_id}")
     return incident_id, report_id

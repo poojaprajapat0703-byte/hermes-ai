@@ -1,118 +1,95 @@
 """
 services/orchestrator/graph.py
 ────────────────────────────────
-What is this file?
-  This file BUILDS the flowchart (graph).
-  It connects all the nodes together and defines the order
-  in which they run.
+Hermes orchestrator graph — D9 version.
 
-What is a StateGraph?
-  StateGraph is LangGraph's main class for building graphs.
-  You tell it:
-    1. What the state looks like (AgentState)
-    2. What nodes exist (classify, analyze, etc.)
-    3. How nodes connect (START → classify → END)
-
-Think of it like building with Lego:
-  - StateGraph is the baseplate
-  - Nodes are the Lego bricks
-  - Edges are how the bricks connect
-
-Our graph today (D8):
+Graph shape:
   ┌─────────┐
   │  START  │
   └────┬────┘
-       │  passes full AgentState
        ▼
-  ┌─────────────┐
-  │   classify  │  ← our classifier node (calls LLM)
-  └──────┬──────┘
-         │  returns {"classification": {...}}
-         ▼
-  ┌─────────┐
-  │   END   │
-  └─────────┘
+  ┌──────────┐
+  │ classify │
+  └────┬─────┘
+       │  fan-out via Send API
+       ├──────────────────────┐
+       ▼                      ▼
+  ┌─────────────┐    ┌──────────────────┐
+  │ log_analyst │    │ trace_inspector  │
+  └──────┬──────┘    └────────┬─────────┘
+         │                    │
+         └─────────┬──────────┘
+                   ▼
+               ┌───────┐
+               │  END  │
+               └───────┘
 
-Future graph (D9+):
-  START → classify → analyze → rca → END
-
-What does compile() do?
-  compile() "bakes" the graph into a runnable object.
-  After compiling you can call:
-    graph.invoke(state)    ← run once
-    graph.stream(state)    ← run and stream each step
-
-What is graph.invoke()?
-  invoke() runs the entire graph from START to END.
-  You pass in the initial state, it returns the final state
-  after all nodes have run.
-
-  Input:  {"incident": "Payment API down"}
-  Output: {"incident": "Payment API down",
-           "classification": {"severity": "high", "domain": "backend"}}
+Parallel execution uses LangGraph's Send API:
+  After classify, a router function fans out to both
+  log_analyst and trace_inspector simultaneously.
+  Both write to state["analyses"] (a list) — LangGraph
+  merges list appends automatically.
 """
 
 import logging
 
 from langgraph.graph import END, START, StateGraph
+from langgraph.types import Send
 
 from .nodes.classifier import classify_incident
+from .nodes.log_analyst import log_analyst_node
+from .nodes.trace_inspector import trace_inspector_node
 from .state import AgentState
 
 logger = logging.getLogger(__name__)
 
 
+def fan_out_to_analysts(state: AgentState) -> list[Send]:
+    """
+    Router: called after classify, fans out to both specialist agents.
+
+    Returns a list of Send objects — LangGraph executes them in parallel.
+    Each Send targets a node name and passes the full current state.
+    """
+    return [
+        Send("log_analyst", state),
+        Send("trace_inspector", state),
+    ]
+
+
 def build_graph():
     """
-    Build and compile the Hermes orchestrator graph.
+    Build and compile the Hermes orchestrator graph (D9).
 
-    Returns:
-      A compiled LangGraph graph ready to invoke.
-
-    How to use it:
-      graph = build_graph()
-      result = graph.invoke({"incident": "Payment API is down"})
-      print(result["classification"])
-
-    Step by step:
-      1. Create a StateGraph with AgentState as the state schema
-      2. Add the "classify" node (points to our function)
-      3. Add edge: START → classify (graph starts here)
-      4. Add edge: classify → END (graph ends after classify)
-      5. Compile and return
+    Flow: START → classify → [log_analyst || trace_inspector] → END
     """
-
-    # Step 1: Create the graph with our state schema
-    # AgentState tells LangGraph what keys the state has
     workflow = StateGraph(AgentState)
 
-    # Step 2: Add nodes
-    # Format: add_node("node_name", function_to_call)
-    # When the graph reaches "classify", it calls classify_incident(state)
+    # Add nodes
     workflow.add_node("classify", classify_incident)
+    workflow.add_node("log_analyst", log_analyst_node)
+    workflow.add_node("trace_inspector", trace_inspector_node)
 
-    # Step 3: Add edges — define the flow
-    # START → classify: the graph begins at the classify node
+    # Edges
     workflow.add_edge(START, "classify")
 
-    # classify → END: after classify runs, the graph is done
-    workflow.add_edge("classify", END)
+    # Fan-out: classify → both analysts in parallel via Send API
+    workflow.add_conditional_edges(
+        "classify",
+        fan_out_to_analysts,
+        ["log_analyst", "trace_inspector"],
+    )
 
-    # Step 4: Compile the graph
-    # This validates the graph (no disconnected nodes, etc.)
-    # and returns a runnable object
+    # Both analysts → END
+    workflow.add_edge("log_analyst", END)
+    workflow.add_edge("trace_inspector", END)
+
     graph = workflow.compile()
-
-    logger.info("Orchestrator graph compiled: START → classify → END")
+    logger.info(
+        "Orchestrator graph compiled: START → classify → "
+        "[log_analyst || trace_inspector] → END"
+    )
     return graph
 
-
-# ─────────────────────────────────────────────
-# MODULE-LEVEL GRAPH INSTANCE
-# ─────────────────────────────────────────────
-# Build the graph once at import time.
-# Other modules import this directly:
-#   from services.orchestrator.graph import graph
-#   result = graph.invoke({...})
 
 graph = build_graph()

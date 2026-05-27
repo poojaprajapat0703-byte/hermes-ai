@@ -1,10 +1,10 @@
-import uuid
 import json
-import asyncpg
 import logging
-from datetime import datetime
-from typing import Optional
+import uuid
 from dataclasses import dataclass, field
+from datetime import datetime
+
+import asyncpg
 
 from shared.db.connection import get_connection
 
@@ -16,10 +16,10 @@ class IncidentCreate:
     source: str
     title: str
     occurred_at: datetime
-    description: Optional[str] = None
+    description: str | None = None
     severity: str = "unknown"
     status: str = "open"
-    raw_payload: Optional[dict] = field(default=None)
+    raw_payload: dict | None = field(default=None)
 
 
 @dataclass
@@ -28,10 +28,10 @@ class Incident:
     source: str
     title: str
     occurred_at: datetime
-    description: Optional[str]
+    description: str | None
     severity: str
     status: str
-    raw_payload: Optional[dict]
+    raw_payload: dict | None
     created_at: datetime
     updated_at: datetime
 
@@ -58,7 +58,7 @@ async def insert_incident(incident: IncidentCreate) -> uuid.UUID:
     return incident_id
 
 
-async def get_incident(incident_id: uuid.UUID) -> Optional[Incident]:
+async def get_incident(incident_id: uuid.UUID) -> Incident | None:
     async with get_connection() as conn:
         row = await conn.fetchrow(
             """
@@ -77,9 +77,9 @@ async def get_incident(incident_id: uuid.UUID) -> Optional[Incident]:
 async def list_incidents(
     limit: int = 50,
     offset: int = 0,
-    severity: Optional[str] = None,
-    status: Optional[str] = None,
-    source: Optional[str] = None,
+    severity: str | None = None,
+    status: str | None = None,
+    source: str | None = None,
 ) -> list[Incident]:
     limit = min(limit, 200)
     conditions = []
@@ -135,7 +135,7 @@ async def update_incident_status(incident_id: uuid.UUID, new_status: str) -> boo
     return rows_affected > 0
 
 
-async def count_incidents(severity: Optional[str] = None) -> int:
+async def count_incidents(severity: str | None = None) -> int:
     async with get_connection() as conn:
         if severity:
             count = await conn.fetchval(

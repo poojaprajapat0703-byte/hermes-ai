@@ -13,8 +13,8 @@ import pytest
 
 from services.ingestion.normalizer import (
     MissingFieldError,
-    Normalizer,
     NormalizedIncident,
+    Normalizer,
 )
 
 

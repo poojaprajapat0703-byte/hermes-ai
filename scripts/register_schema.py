@@ -6,8 +6,8 @@ Run with: uv run python scripts/register_schema.py
 """
 
 import json
-import urllib.request
 import urllib.error
+import urllib.request
 
 SCHEMA_REGISTRY_URL = "http://localhost:8081"
 SCHEMA_FILE = "schemas/incident.avsc"
