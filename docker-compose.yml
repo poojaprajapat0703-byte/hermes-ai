@@ -39,15 +39,12 @@ services:
       zookeeper:
         condition: service_healthy
     ports:
-      - "29092:29092"       # host-facing port (for kafkacat, Kafka UI, etc.)
+      - "29092:29092"
     environment:
       KAFKA_BROKER_ID: 1
       KAFKA_ZOOKEEPER_CONNECT: "zookeeper:2181"
       KAFKA_ZOOKEEPER_CONNECTION_TIMEOUT_MS: 60000
       KAFKA_ZOOKEEPER_SESSION_TIMEOUT_MS: 60000
-      # Two listeners:
-      #   PLAINTEXT     → used by containers inside the Docker network (kafka:9092)
-      #   PLAINTEXT_HOST → used by tools on your host machine (localhost:29092)
       KAFKA_LISTENERS: "PLAINTEXT://0.0.0.0:9092,PLAINTEXT_HOST://0.0.0.0:29092"
       KAFKA_ADVERTISED_LISTENERS: "PLAINTEXT://kafka:9092,PLAINTEXT_HOST://localhost:29092"
       KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: "PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT"
@@ -104,11 +101,11 @@ services:
   postgres:
     image: postgres:16-alpine
     container_name: hermes-postgres
-    env_file: .env                              # reads the full .env
+    env_file: .env
     environment:
-      POSTGRES_USER: ${POSTGRES_USER}           # sourced from .env
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}   # sourced from .env
-      POSTGRES_DB: ${POSTGRES_DB}               # sourced from .env
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
     ports:
       - "5432:5432"
     volumes:
@@ -116,7 +113,6 @@ services:
     networks:
       - hermes-network
     healthcheck:
-      # Uses ${VAR} here too — stays in sync automatically
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
       interval: 10s
       timeout: 5s
@@ -146,8 +142,8 @@ services:
     image: qdrant/qdrant
     container_name: hermes-qdrant
     ports:
-      - "6333:6333"     # REST API + Web UI
-      - "6334:6334"     # gRPC
+      - "6333:6333"
+      - "6334:6334"
     volumes:
       - qdrant_data:/qdrant/storage
     networks:
@@ -157,6 +153,34 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+
+  # ─── Observability ──────────────────────────────────────────────────────────
+
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: hermes-prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./infra/prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus_data:/prometheus
+    networks:
+      - hermes-network
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: hermes-grafana
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: admin
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./infra/grafana/provisioning:/etc/grafana/provisioning
+    depends_on:
+      - prometheus
+    networks:
+      - hermes-network
 
   # ─── API ────────────────────────────────────────────────────────────────────
   # Uncomment when services/api/Dockerfile exists (end of D5)
@@ -174,7 +198,7 @@ services:
   #     - "8000:8000"
   #   depends_on:
   #     postgres:
-  #       condition: service_healthy   # waits for pg_isready
+  #       condition: service_healthy
   #     kafka:
   #       condition: service_healthy
   #     redis:
@@ -185,7 +209,9 @@ services:
 volumes:
   postgres_data:
   redis_data:
-  qdrant_data:          # ← NEW: persists vectors across restarts
+  qdrant_data:
+  prometheus_data:
+  grafana_data:
 
 networks:
   hermes-network:

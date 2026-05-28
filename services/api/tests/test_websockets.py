@@ -2,41 +2,45 @@
 tests/test_websockets.py
 ─────────────────────────
 WebSocket endpoint tests.
-
-FastAPI provides a WebSocketTestSession via TestClient for WS tests.
-Note: we use the sync TestClient here because WebSocket test sessions
-are sync by design in Starlette's test utilities.
 """
 
 import json
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi.testclient import TestClient
 
-from ..dependencies import get_db_pool, get_ws_manager
-from ..main import create_app
-from ..websockets.manager import ConnectionManager
+from services.api.dependencies import get_db_pool, get_ws_manager
+from services.api.main import create_app
+from services.api.websockets.manager import ConnectionManager
 
 
 @pytest.fixture
 def ws_client():
     """
-    Test client with mocked DB pool.
-    We use a fresh ConnectionManager per test so WS state doesn't leak.
+    Test client with mocked DB pool AND mocked lifespan.
+
+    The fix: patch asyncpg.create_pool AND KafkaConsumerService
+    so the lifespan never tries to connect to a real DB or Kafka.
     """
     app = create_app()
 
-    mock_pool = MagicMock()
+    mock_pool = AsyncMock()
     mock_pool._closed = False
 
     fresh_manager = ConnectionManager()
 
+    mock_kafka = MagicMock()
+    mock_kafka.start = AsyncMock()
+    mock_kafka.stop = AsyncMock()
+
     app.dependency_overrides[get_db_pool] = lambda: mock_pool
     app.dependency_overrides[get_ws_manager] = lambda: fresh_manager
 
-    with TestClient(app) as client:
-        yield client, fresh_manager
+    with patch("services.api.main.asyncpg.create_pool", new=AsyncMock(return_value=mock_pool)), \
+         patch("services.api.main.KafkaConsumerService", return_value=mock_kafka):
+        with TestClient(app) as client:
+            yield client, fresh_manager
 
     app.dependency_overrides.clear()
 

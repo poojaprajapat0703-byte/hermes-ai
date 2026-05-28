@@ -31,7 +31,9 @@ Parallel execution uses LangGraph's Send API:
   merges list appends automatically via Annotated[list, operator.add].
 """
 
+
 import logging
+import time
 
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import Send
@@ -78,28 +80,34 @@ def build_graph():
     workflow.add_edge("rca_writer", END)
 
     graph = workflow.compile()
-    logger.info("Orchestrator graph compiled (D12): cache-aware pipeline ready")
+    logger.info("Orchestrator graph compiled (D13): metrics-instrumented pipeline")
     return graph
 
 
 def run_with_cache(incident: str) -> dict:
     """
-    Run the orchestrator with semantic cache check.
-
-    1. Check cache first
-    2. If hit → return cached RCA instantly
-    3. If miss → run full graph → cache the result
+    Run orchestrator with semantic cache + Prometheus metrics.
     """
     from shared.cache.semantic_cache import cache_get, cache_set
+    from shared.observability.metrics import (
+        cache_hit_total,
+        incidents_total,
+        rca_latency_seconds,
+    )
 
-    # Step 1: Check cache
+    incidents_total.inc()
+
+    # Check cache
     cached = cache_get(incident)
     if cached:
+        cache_hit_total.inc()
         logger.info("run_with_cache: cache HIT — skipping graph")
         return {"rca_report": cached, "cache_hit": True, "analyses": []}
 
-    # Step 2: Cache miss — run full graph
+    # Cache miss — run full graph with latency tracking
     logger.info("run_with_cache: cache MISS — running full graph")
+    start = time.time()
+
     graph = build_graph()
     result = graph.invoke({
         "incident": incident,
@@ -108,7 +116,8 @@ def run_with_cache(incident: str) -> dict:
         "rca_report": {},
     })
 
-    # Step 3: Cache the result
+    rca_latency_seconds.observe(time.time() - start)
+
     if result.get("rca_report"):
         cache_set(incident, result["rca_report"])
 

@@ -1,0 +1,142 @@
+# .github/workflows/ci.yml
+# ──────────────────────────
+# What is this file?
+#   This is the ROBOT's instruction manual.
+#   GitHub reads this file and runs these steps automatically
+#   every time you push code or open a pull request.
+#
+# How does GitHub Actions work?
+#   1. You push code → GitHub sees the push
+#   2. GitHub finds this file in .github/workflows/
+#   3. GitHub spins up a fresh Ubuntu computer in the cloud
+#   4. Runs every step in order
+#   5. If any step fails → red X on your commit
+#   6. If all pass → green checkmark
+#
+# Why Ubuntu in the cloud?
+#   It's a clean, fresh machine every time.
+#   No "works on my machine" problems.
+#   Everyone's code gets tested the same way.
+#
+# Our pipeline runs 4 gates in order:
+#   Gate 1: ruff    → is the code clean? (lint)
+#   Gate 2: mypy    → are the types correct?
+#   Gate 3: pytest  → do all tests pass?
+#   Gate 4: eval    → does the AI score >= 70%? (mock mode in CI)
+#
+# If Gate 1 fails, Gates 2-4 don't run.
+# Fix the earliest failure first.
+
+name: Hermes CI
+
+# When does this run?
+on:
+  push:
+    branches: [ main, develop ]   # on every push to main or develop
+  pull_request:
+    branches: [ main ]            # on every PR to main
+
+jobs:
+  ci:
+    name: Lint → Types → Tests → Eval
+    runs-on: ubuntu-latest        # fresh Ubuntu machine every run
+
+    # What Python version to use
+    strategy:
+      matrix:
+        python-version: ["3.11"]
+
+    steps:
+      # ── Step 1: Get the code ─────────────────
+      - name: Checkout code
+        uses: actions/checkout@v4
+        # This downloads your repo onto the Ubuntu machine
+
+      # ── Step 2: Set up Python ─────────────────
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: "pip"            # cache pip downloads (faster runs)
+
+      # ── Step 3: Install dependencies ──────────
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+          pip install langgraph langchain-openai litellm langfuse python-dotenv
+          pip install opentelemetry-sdk opentelemetry-exporter-otlp prometheus-client
+
+      # ── Step 4: Create .env for CI ────────────
+      # We don't have real API keys in CI
+      # Ollama doesn't run in CI either
+      # But we set fake values so the code doesn't crash on import
+      - name: Create CI environment file
+        run: |
+          cat > .env << 'EOF'
+          OPENAI_API_KEY=ollama
+          CLASSIFIER_MODEL=ollama/llama3.2
+          OLLAMA_API_BASE=http://localhost:11434
+          DATABASE_URL=postgresql://hermes:hermes_secret@localhost:5432/hermes_db
+          KAFKA_BOOTSTRAP_SERVERS=localhost:29092
+          KAFKA_RCA_TOPIC=rca.completed
+          LANGFUSE_PUBLIC_KEY=
+          LANGFUSE_SECRET_KEY=
+          LANGFUSE_HOST=
+          APP_ENV=ci
+          LOG_LEVEL=WARNING
+          EOF
+
+      # ── GATE 1: Ruff (lint) ───────────────────
+      - name: Gate 1 — Ruff lint check
+        run: |
+          echo "Running ruff..."
+          ruff check services/ tests/ shared/
+          echo "✅ Ruff passed"
+        # If ruff finds errors → this step fails → CI fails
+        # Fix with: ruff check services/ --fix
+
+      # ── GATE 2: Mypy (type check) ─────────────
+      - name: Gate 2 — Mypy type check
+        run: |
+          echo "Running mypy..."
+          mypy services/ shared/
+          echo "✅ Mypy passed"
+        # If mypy finds type errors → this step fails → CI fails
+
+      # ── GATE 3: Pytest (unit tests) ───────────
+      - name: Gate 3 — Pytest unit tests
+        run: |
+          echo "Running tests..."
+          pytest services/api/tests/ tests/test_d13.py -v --tb=short
+          echo "✅ Tests passed"
+        # Runs unit tests only (mocked, no real Kafka/DB/LLM needed)
+        # Integration tests are skipped (they need Ollama)
+
+      # ── GATE 4: Eval harness ──────────────────
+      - name: Gate 4 — Classifier eval (mock mode)
+        run: |
+          echo "Running eval harness in mock mode..."
+          pytest tests/evals/test_eval.py -v --tb=short -k "not integration"
+          echo "✅ Eval passed"
+        # Runs eval in mock mode (perfect answers)
+        # Verifies eval harness LOGIC is correct
+        # Real LLM eval runs manually: pytest tests/evals/ -m integration
+
+      # ── Coverage report ───────────────────────
+      - name: Coverage report
+        run: |
+          pytest services/api/tests/ --cov=services --cov-report=term-missing
+        continue-on-error: true   # don't fail CI just for coverage drop
+        # We use continue-on-error because coverage can fluctuate
+        # as new code is added. Treat it as informational for now.
+
+      # ── Summary ───────────────────────────────
+      - name: CI Summary
+        if: always()              # run even if previous steps failed
+        run: |
+          echo "════════════════════════════════════"
+          echo "  Hermes CI Complete"
+          echo "  Commit: ${{ github.sha }}"
+          echo "  Branch: ${{ github.ref_name }}"
+          echo "════════════════════════════════════"

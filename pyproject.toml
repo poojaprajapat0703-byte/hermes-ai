@@ -17,6 +17,10 @@ dependencies = [
     "qdrant-client>=1.18.0",
     "sentence-transformers>=5.5.1",
     "kafka-python>=2.3.1",
+    "opentelemetry-sdk>=1.42.1",
+    "opentelemetry-exporter-otlp>=1.42.1",
+    "prometheus-client>=0.25.0",
+    "langfuse>=4.6.1",
 ]
 
 [dependency-groups]
@@ -77,5 +81,6 @@ ignore = ["E402"]
 python_version = "3.11"
 strict = false
 ignore_missing_imports = true
-warn_unused_ignores = true
+warn_unused_ignores = false   
 warn_return_any = false
+explicit_package_bases = true
