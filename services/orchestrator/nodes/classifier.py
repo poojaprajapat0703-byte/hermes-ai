@@ -15,10 +15,6 @@ from dotenv import load_dotenv
 # Load .env file
 load_dotenv()
 
-# Force Ollama settings
-os.environ.setdefault("OPENAI_API_KEY", "ollama")
-os.environ["OLLAMA_API_BASE"] = "http://localhost:11434"
-
 logger = logging.getLogger(__name__)
 
 # ─────────────────────────────────────────────
@@ -76,11 +72,9 @@ def classify_incident(state: dict) -> dict:
     prompt = CLASSIFIER_PROMPT.format(incident=incident)
 
     try:
-        # Step 3: Call Ollama via LiteLLM
-        # model MUST be "ollama/llama3.2" — this is how LiteLLM knows to use Ollama
-        # api_base MUST point to local Ollama server
+        # Step 3: Call Claude via LiteLLM (uses ANTHROPIC_API_KEY from .env)
         response = litellm.completion(
-            model="ollama/llama3.2",
+            model=os.getenv("CLASSIFIER_MODEL", "claude-haiku-4-5-20251001"),
             messages=[
                 {
                     "role": "system",
@@ -91,7 +85,6 @@ def classify_incident(state: dict) -> dict:
                     "content": prompt,
                 },
             ],
-            api_base="http://localhost:11434",
             temperature=0.1,
         )
 

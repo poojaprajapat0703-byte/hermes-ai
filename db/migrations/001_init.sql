@@ -91,6 +91,15 @@ CREATE INDEX IF NOT EXISTS idx_incidents_status ON incidents(status);
 -- INDEX: "show me all incidents from Datadog" — filter by source.
 CREATE INDEX IF NOT EXISTS idx_incidents_source ON incidents(source);
 
+-- ADD MISSING COLUMNS if they don't exist
+ALTER TABLE IF EXISTS incidents
+    ADD COLUMN IF NOT EXISTS service_name VARCHAR(200),
+    ADD COLUMN IF NOT EXISTS domain VARCHAR(100),
+    ALTER COLUMN occurred_at DROP NOT NULL,
+    ALTER COLUMN occurred_at SET DEFAULT NOW(),
+    ALTER COLUMN title DROP NOT NULL,
+    ALTER COLUMN title SET DEFAULT 'Incident';
+
 
 -- =============================================================================
 -- TABLE: analyses
@@ -114,13 +123,12 @@ CREATE TABLE IF NOT EXISTS analyses (
     -- This is the "relational" in relational database — rows link to other rows.
     incident_id UUID NOT NULL REFERENCES incidents(id) ON DELETE CASCADE,
 
-    -- Which AI model ran this analysis?
-    -- Storing the model name lets you compare claude-3-opus vs claude-sonnet outputs.
-    model_name VARCHAR(100) NOT NULL,
+    -- Which AI model/agent ran this analysis?
+    agent_name VARCHAR(100) NOT NULL,
 
     -- The structured output from the AI — arbitrary JSON.
     -- Could contain: root_cause hypothesis, confidence score, suggested actions.
-    analysis_result JSONB NOT NULL,
+    output JSONB NOT NULL,
 
     -- How confident is the model? 0.0 to 1.0
     -- NUMERIC(5,4) = up to 5 digits total, 4 after decimal. e.g. 0.9123
@@ -130,7 +138,7 @@ CREATE TABLE IF NOT EXISTS analyses (
     tokens_used INTEGER,
 
     -- How long did inference take in milliseconds?
-    processing_time_ms INTEGER,
+    latency_ms INTEGER,
 
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
@@ -160,14 +168,20 @@ CREATE TABLE IF NOT EXISTS rca_reports (
     -- Human-readable summary written by AI (or engineer).
     summary TEXT NOT NULL,
 
-    -- The identified root cause.
-    root_cause TEXT NOT NULL,
+    -- The identified probable cause / root cause.
+    probable_cause TEXT NOT NULL,
+
+    -- Recommended actions to prevent recurrence.
+    remediation TEXT,
+
+    -- Confidence level of the RCA (0.0 to 1.0)
+    confidence NUMERIC(5,4),
 
     -- Structured list of contributing factors — flexible JSON array.
     -- Example: [{"factor": "memory leak", "confidence": 0.92}, ...]
     contributing_factors JSONB DEFAULT '[]'::jsonb,
 
-    -- Recommended actions to prevent recurrence.
+    -- Recommended actions to prevent recurrence (structured).
     -- Example: [{"action": "add circuit breaker", "priority": "high"}, ...]
     recommendations JSONB DEFAULT '[]'::jsonb,
 
@@ -204,26 +218,25 @@ CREATE TABLE IF NOT EXISTS human_feedback (
 
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
 
-    -- Which analysis is this feedback about?
-    analysis_id UUID NOT NULL REFERENCES analyses(id) ON DELETE CASCADE,
+    -- Which RCA is this feedback about?
+    rca_id UUID NOT NULL REFERENCES rca_reports(id) ON DELETE CASCADE,
 
     -- Which engineer gave feedback?
     engineer_id VARCHAR(200) NOT NULL,
 
-    -- Simple rating: thumbs_up, thumbs_down, neutral
-    rating VARCHAR(20) NOT NULL
-        CHECK (rating IN ('thumbs_up', 'thumbs_down', 'neutral')),
+    -- The true root cause (if different from AI analysis)
+    true_cause TEXT,
+
+    -- Simple rating: 1-5 or similar
+    rating INTEGER,
 
     -- Free-text correction or comment.
     correction TEXT,
 
-    -- Was the AI's root cause correct?
-    root_cause_correct BOOLEAN,
-
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX IF NOT EXISTS idx_human_feedback_analysis_id ON human_feedback(analysis_id);
+CREATE INDEX IF NOT EXISTS idx_human_feedback_rca_id ON human_feedback(rca_id);
 
 
 -- =============================================================================
@@ -241,24 +254,17 @@ CREATE TABLE IF NOT EXISTS eval_runs (
 
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
 
-    -- Human-readable name: "claude-sonnet vs claude-opus baseline"
-    run_name VARCHAR(200) NOT NULL,
+    -- Which incident is being evaluated?
+    incident_id UUID NOT NULL REFERENCES incidents(id) ON DELETE CASCADE,
 
-    -- Which model was being evaluated?
-    model_name VARCHAR(100) NOT NULL,
+    -- Name of the metric being evaluated
+    metric_name VARCHAR(200) NOT NULL,
 
-    -- How many incidents were in this eval batch?
-    total_incidents INTEGER NOT NULL DEFAULT 0,
+    -- Score for this metric (0.0 to 1.0)
+    score NUMERIC(5,4),
 
-    -- Aggregate accuracy score from 0 to 1
-    accuracy_score NUMERIC(5,4),
-
-    -- Full breakdown of metrics as JSON
-    -- Example: {"precision": 0.91, "recall": 0.87, "f1": 0.89}
-    metrics JSONB DEFAULT '{}'::jsonb,
-
-    -- Did this run pass or fail the quality threshold?
-    passed BOOLEAN NOT NULL DEFAULT FALSE,
+    -- Which model was the evaluator?
+    evaluator_model VARCHAR(100),
 
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );

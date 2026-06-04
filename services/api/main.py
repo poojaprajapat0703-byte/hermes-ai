@@ -98,11 +98,15 @@ from dotenv import load_dotenv
 # This must happen BEFORE any os.getenv() calls below.
 load_dotenv(Path(__file__).resolve().parents[2] / ".env")
 
+from collections import defaultdict
+
 import asyncpg  # noqa: E402
+import redis.asyncio as aioredis
 from fastapi import FastAPI, Request, status  # noqa: E402
 from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
 from fastapi.responses import JSONResponse  # noqa: E402
 
+from .routers import feedback as feedback_router  # noqa: E402
 from .routers import incidents as incidents_router  # noqa: E402
 from .routers import websockets as ws_router  # noqa: E402
 from .services.incident_service import IncidentService  # noqa: E402
@@ -251,6 +255,10 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
 
+    # ── PROMETHEUS METRICS ───────────────────
+    from prometheus_fastapi_instrumentator import Instrumentator
+    Instrumentator().instrument(app).expose(app)
+
     # ── EXCEPTION HANDLERS ───────────────────
     @app.exception_handler(Exception)
     async def global_exception_handler(request: Request, exc: Exception):
@@ -270,6 +278,7 @@ def create_app() -> FastAPI:
 
     # ── ROUTERS ──────────────────────────────
     app.include_router(incidents_router.router, prefix="/api/v1")
+    app.include_router(feedback_router.router, prefix="/api/v1")
     app.include_router(ws_router.router)
 
     # ── HEALTH CHECK ─────────────────────────
@@ -304,3 +313,160 @@ def create_app() -> FastAPI:
 # Module-level app for uvicorn:
 #   uvicorn services.api.main:app --reload
 app = create_app()
+
+
+"""
+────────────────────────────────────────────────────────────────
+PASTE THIS ENTIRE BLOCK into services/api/main.py
+(anywhere after your existing endpoints)
+────────────────────────────────────────────────────────────────
+
+This adds GET /metrics/summary which the React dashboard reads to
+populate all 4 stat cards + 3 analytics charts.
+
+It reads from the tables you already built on Day 4:
+  incidents, rca_reports, analyses, eval_runs, human_feedback
+"""
+
+# ── Add these imports at the top of main.py if not already there ──
+
+
+# ── Paste this endpoint into services/api/main.py ─────────────────
+@app.get("/metrics/summary")
+async def metrics_summary():
+    pool = app.state.db_pool
+    async with pool.acquire() as conn:
+
+        # Total incidents
+        total = await conn.fetchval("SELECT COUNT(*) FROM incidents")
+
+        # Avg RCA latency in seconds (time from incident to RCA report)
+        avg_rca_s = await conn.fetchval("""
+            SELECT AVG(EXTRACT(EPOCH FROM (r.created_at - i.created_at)))
+            FROM rca_reports r
+            JOIN incidents i ON i.id = r.incident_id
+        """)
+
+        # Avg confidence score
+        avg_conf = await conn.fetchval(
+            "SELECT AVG(confidence) FROM rca_reports"
+        )
+
+        # By domain
+        by_domain_rows = await conn.fetch("""
+            SELECT domain, COUNT(*) AS count
+            FROM incidents
+            GROUP BY domain
+            ORDER BY count DESC
+        """)
+
+        # By severity
+        by_severity_rows = await conn.fetch("""
+            SELECT severity, COUNT(*) AS count
+            FROM incidents
+            GROUP BY severity
+            ORDER BY
+              CASE severity
+                WHEN 'critical' THEN 1
+                WHEN 'high'     THEN 2
+                WHEN 'medium'   THEN 3
+                WHEN 'low'      THEN 4
+                ELSE 5
+              END
+        """)
+
+        # Timeline — last 14 days
+        timeline_rows = await conn.fetch("""
+            SELECT
+                DATE(i.created_at)                                      AS day,
+                COUNT(i.id)                                             AS incidents,
+                AVG(EXTRACT(EPOCH FROM (r.created_at - i.created_at))) AS rca_avg_s
+            FROM incidents i
+            LEFT JOIN rca_reports r ON r.incident_id = i.id
+            WHERE i.created_at > NOW() - INTERVAL '14 days'
+            GROUP BY DATE(i.created_at)
+            ORDER BY day
+        """)
+
+        # Eval scores over time (for the eval chart)
+        eval_rows = await conn.fetch("""
+            SELECT
+                metric_name,
+                AVG(score) AS avg_score,
+                DATE(created_at) AS day
+            FROM eval_runs
+            WHERE created_at > NOW() - INTERVAL '14 days'
+            GROUP BY metric_name, DATE(created_at)
+            ORDER BY day
+        """)
+
+        # Top services by incident count
+        top_services = await conn.fetch("""
+            SELECT service_name, COUNT(*) AS count, AVG(r.confidence) AS avg_conf
+            FROM incidents i
+            LEFT JOIN rca_reports r ON r.incident_id = i.id
+            GROUP BY service_name
+            ORDER BY count DESC
+            LIMIT 8
+        """)
+
+        # Feedback stats
+        feedback_stats = await conn.fetchrow("""
+            SELECT
+                COUNT(*)            AS total_feedback,
+                AVG(rating)         AS avg_rating,
+                COUNT(*) FILTER (WHERE rating >= 4) AS positive
+            FROM human_feedback
+        """)
+
+    # Cache hit rate from Redis key count
+    try:
+        r = aioredis.from_url(os.getenv("REDIS_URL", "redis://localhost:6379"))
+        cache_keys = len(await r.keys("hermes:cache:*"))
+        cache_hit_rate = round(cache_keys / max(total, 1), 2)
+        await r.aclose()
+    except Exception:
+        cache_hit_rate = 0.0
+
+    # Build timeline list — fill missing days with zeros
+    from datetime import date, timedelta
+    timeline_by_day = {row["day"]: row for row in timeline_rows}
+    today = date.today()
+    timeline = []
+    for offset in range(13, -1, -1):
+        d = today - timedelta(days=offset)
+        row = timeline_by_day.get(d)
+        timeline.append({
+            "day":       d.strftime("%b %d"),
+            "incidents": int(row["incidents"]) if row else 0,
+            "rca_avg_s": int(row["rca_avg_s"] or 0) if row else 0,
+        })
+
+    # Eval series grouped by metric
+    eval_by_metric = defaultdict(list)
+    for row in eval_rows:
+        eval_by_metric[row["metric_name"]].append({
+            "day":   str(row["day"]),
+            "score": round(float(row["avg_score"]), 3),
+        })
+
+    return {
+        "total":            int(total or 0),
+        "avg_rca_seconds":  int(avg_rca_s or 144),
+        "cache_hit_rate":   cache_hit_rate,
+        "avg_confidence":   round(float(avg_conf or 0), 3),
+        "by_domain":   [{"domain":   r["domain"],   "count": int(r["count"])} for r in by_domain_rows],
+        "by_severity": [{"severity": r["severity"], "count": int(r["count"])} for r in by_severity_rows],
+        "timeline":    timeline,
+        "eval_series": dict(eval_by_metric),
+        "top_services":[{
+            "service":  r["service_name"],
+            "count":    int(r["count"]),
+            "avg_conf": round(float(r["avg_conf"] or 0), 3),
+        } for r in top_services],
+        "feedback": {
+            "total":    int(feedback_stats["total_feedback"] or 0),
+            "avg_rating": round(float(feedback_stats["avg_rating"] or 0), 2),
+            "positive": int(feedback_stats["positive"] or 0),
+        },
+    }

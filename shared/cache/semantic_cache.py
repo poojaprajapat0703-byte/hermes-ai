@@ -21,6 +21,7 @@ import json
 import logging
 import os
 
+import anthropic
 import numpy as np
 import redis  # type: ignore[import-untyped]
 from sentence_transformers import SentenceTransformer
@@ -31,8 +32,11 @@ MODEL_NAME = "all-MiniLM-L6-v2"
 SIMILARITY_THRESHOLD = 0.92
 CACHE_PREFIX = "semantic_cache:"
 
+ANTHROPIC_MODEL = "claude-haiku-4-5-20251001"
+
 _model = None
 _redis = None
+_anthropic = None
 
 
 def _get_model() -> SentenceTransformer:
@@ -49,6 +53,13 @@ def _get_redis() -> redis.Redis:
         port = int(os.getenv("REDIS_PORT", "6379"))
         _redis = redis.Redis(host=host, port=port, decode_responses=True)
     return _redis
+
+
+def _get_anthropic() -> anthropic.Anthropic:
+    global _anthropic
+    if _anthropic is None:
+        _anthropic = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
+    return _anthropic
 
 
 def _cosine_similarity(a: list[float], b: list[float]) -> float:
@@ -135,3 +146,130 @@ def cache_set(incident_text: str, rca_report: dict) -> None:
 
     except Exception as exc:
         logger.warning("semantic_cache: cache_set failed (non-fatal): %s", exc)
+
+
+def cache_clear() -> int:
+    """
+    Flush all semantic cache entries from Redis.
+
+    Returns:
+      Number of keys deleted.
+    """
+    try:
+        r = _get_redis()
+        keys = r.keys(f"{CACHE_PREFIX}*")
+        if not keys:
+            logger.info("semantic_cache: cache_clear called but cache already empty")
+            return 0
+        deleted = r.delete(*keys)
+        logger.info("semantic_cache: CLEAR deleted %d keys", deleted)
+        return deleted
+    except Exception as exc:
+        logger.warning("semantic_cache: cache_clear failed: %s", exc)
+        return 0
+
+
+def cache_invalidate(incident_id: str) -> bool:
+    """
+    Delete one specific cached entry by incident ID.
+
+    Args:
+      incident_id: The incident ID used when the entry was stored
+
+    Returns:
+      True if the key existed and was deleted, False otherwise.
+    """
+    try:
+        r = _get_redis()
+        key = f"{CACHE_PREFIX}{incident_id}"
+        deleted = r.delete(key)
+        if deleted:
+            logger.info("semantic_cache: INVALIDATE key=%s", key)
+            return True
+        logger.info("semantic_cache: INVALIDATE key=%s not found", key)
+        return False
+    except Exception as exc:
+        logger.warning("semantic_cache: cache_invalidate failed: %s", exc)
+        return False
+
+
+def cache_list() -> list[dict]:
+    """
+    Inspect all cached entries: incident IDs, TTL, and stored report summary.
+
+    Returns:
+      List of dicts with keys: incident_id, key, ttl_seconds, rca_keys
+    """
+    try:
+        r = _get_redis()
+        keys = r.keys(f"{CACHE_PREFIX}*")
+        if not keys:
+            logger.info("semantic_cache: cache_list called but cache is empty")
+            return []
+
+        results = []
+        for key in keys:
+            entry = r.get(key)
+            ttl = r.ttl(key)
+            incident_id = key.removeprefix(CACHE_PREFIX)
+            rca_keys: list[str] = []
+            if entry:
+                data = json.loads(entry)
+                rca_keys = list(data.get("rca_report", {}).keys())
+            results.append({
+                "incident_id": incident_id,
+                "key": key,
+                "ttl_seconds": ttl,
+                "rca_keys": rca_keys,
+            })
+
+        logger.info("semantic_cache: LIST returned %d entries", len(results))
+        return results
+
+    except Exception as exc:
+        logger.warning("semantic_cache: cache_list failed: %s", exc)
+        return []
+
+
+def generate_rca(incident_text: str, incident_id: str) -> dict:
+    """
+    Generate an RCA report for an incident using claude-haiku-4-5-20251001.
+
+    Args:
+      incident_text: Human-readable description of the incident
+      incident_id:   Unique ID to tag the report with
+
+    Returns:
+      RCA report dict with keys: incident_id, summary, root_cause,
+      contributing_factors, timeline, remediation, prevention
+    """
+    client = _get_anthropic()
+
+    prompt = f"""You are an SRE performing a root cause analysis.
+
+Incident: {incident_text}
+
+Respond ONLY with a JSON object (no markdown, no preamble) with these keys:
+- summary: one-sentence description of the incident
+- root_cause: the primary technical cause
+- contributing_factors: list of strings
+- timeline: list of {{time, event}} objects
+- remediation: steps taken or recommended to resolve
+- prevention: list of action items to prevent recurrence
+"""
+
+    try:
+        message = client.messages.create(
+            model=ANTHROPIC_MODEL,
+            max_tokens=1024,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        raw = message.content[0].text
+        clean = raw.strip().removeprefix("```json").removesuffix("```").strip()
+        rca_report = json.loads(clean)
+        rca_report["incident_id"] = incident_id
+        logger.info("semantic_cache: RCA generated for incident_id=%s", incident_id)
+        return rca_report
+    except Exception as exc:
+        logger.warning("semantic_cache: generate_rca failed: %s", exc)
+        return {"incident_id": incident_id, "error": str(exc)}

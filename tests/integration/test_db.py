@@ -22,7 +22,8 @@ from shared.db.rca_repo import (
     mark_rca_human_reviewed,
 )
 
-DATABASE_URL = "postgresql://hermes:hermes_secret@127.0.0.1:5432/hermes_db"
+# sslmode=disable — local Docker Postgres has no SSL configured
+DATABASE_URL = "postgresql://hermes:hermes_secret@127.0.0.1:5432/hermes_db?sslmode=disable"
 
 
 @pytest.fixture(scope="session")
